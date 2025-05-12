@@ -3,77 +3,92 @@ import uuid
 from typing import List, Optional
 from datetime import datetime
 
-from domain.entities.work_order import WorkOrder
 from domain.repositories.work_order_repository import AbstractWorkOrderRepository
 from domain.value_objects.order_status import OrderStatus
-from api.schemas import work_order_schemas # 使用相对导入可能更好，或者配置PYTHONPATH
+# Import SQLModel classes; these will be the primary data carriers now
+from infrastructure.sqlmodels.work_order import WorkOrder, WorkOrderCreate, WorkOrderUpdate
+
 
 class WorkOrderApplicationService:
     def __init__(self, work_order_repo: AbstractWorkOrderRepository):
         self.work_order_repo = work_order_repo
 
-    async def create_work_order(self, wo_create_data: work_order_schemas.WorkOrderCreateRequest) -> WorkOrder:
-        # 检查工单号是否已存在 (业务规则可以在应用层或领域服务中)
+    async def create_work_order_sqlmodel(self, wo_create_data: WorkOrderCreate) -> WorkOrder:
+        """
+        Creates a new work order using SQLModel.
+        wo_create_data is an instance of WorkOrderCreate.
+        Returns the persisted WorkOrder table model.
+        """
         existing_wo = await self.work_order_repo.get_by_order_number(wo_create_data.order_number)
         if existing_wo:
             raise ValueError(f"Work order with number '{wo_create_data.order_number}' already exists.")
 
-        work_order = WorkOrder(
-            order_number=wo_create_data.order_number,
-            product_name=wo_create_data.product_name,
-            quantity=wo_create_data.quantity,
-            due_date=wo_create_data.due_date,
-            notes=wo_create_data.notes,
-            status=wo_create_data.status if wo_create_data.status else OrderStatus.PENDING
-        )
-        return await self.work_order_repo.add(work_order)
+        # Convert WorkOrderCreate to WorkOrder (table model)
+        # SQLModel makes this easy if WorkOrderCreate contains all necessary fields
+        # or if WorkOrder has appropriate defaults (like id, created_at, updated_at).
+        
+        # The WorkOrder model has default_factory for id, and DB defaults for created_at/updated_at.
+        # So, we can directly create a WorkOrder instance from WorkOrderCreate.
+        # SQLModel's .model_validate should work if WorkOrderCreate is a compatible subset.
+        # Or, more explicitly:
+        new_work_order_table_instance = WorkOrder.model_validate(wo_create_data)
+        # new_work_order_table_instance.id = uuid.uuid4() # If not using default_factory in model
+        # created_at and updated_at will be handled by the database as per Alembic migration.
+
+        return await self.work_order_repo.add(new_work_order_table_instance)
 
     async def get_work_order_by_id(self, wo_id: uuid.UUID) -> Optional[WorkOrder]:
+        """Returns a WorkOrder table model instance."""
         return await self.work_order_repo.get_by_id(wo_id)
 
     async def get_all_work_orders(self, skip: int = 0, limit: int = 100) -> List[WorkOrder]:
+        """Returns a list of WorkOrder table model instances."""
         return await self.work_order_repo.list_all(skip=skip, limit=limit)
 
-    async def update_work_order(
+    async def update_work_order_sqlmodel(
         self,
         wo_id: uuid.UUID,
-        wo_update_data: work_order_schemas.WorkOrderUpdateRequest
+        wo_update_data: WorkOrderUpdate
     ) -> Optional[WorkOrder]:
-        work_order = await self.work_order_repo.get_by_id(wo_id)
-        if not work_order:
-            return None
+        """
+        Updates a work order using SQLModel.
+        wo_update_data is an instance of WorkOrderUpdate.
+        Returns the updated WorkOrder table model instance.
+        """
+        # The repository's update method now handles applying WorkOrderUpdate to the fetched WorkOrder
+        
+        # Business logic before update (e.g., status change validation) can be here:
+        current_wo = await self.work_order_repo.get_by_id(wo_id)
+        if not current_wo:
+            return None # Or raise not found
 
-        update_data = wo_update_data.model_dump(exclude_unset=True) # Pydantic v2
+        if wo_update_data.status is not None:
+            # Example of domain logic:
+            if current_wo.status == OrderStatus.COMPLETED and wo_update_data.status != OrderStatus.COMPLETED:
+                raise ValueError("Cannot change status of a completed order via this generic update. Use a specific operation.")
+            if current_wo.status == OrderStatus.CANCELLED and wo_update_data.status != OrderStatus.CANCELLED:
+                raise ValueError("Cannot change status of a cancelled order.")
+        
+        if wo_update_data.order_number and wo_update_data.order_number != current_wo.order_number:
+            existing_wo_with_new_number = await self.work_order_repo.get_by_order_number(wo_update_data.order_number)
+            if existing_wo_with_new_number and existing_wo_with_new_number.id != wo_id:
+                 raise ValueError(f"Work order with number '{wo_update_data.order_number}' already exists.")
 
-        if "order_number" in update_data and update_data["order_number"] != work_order.order_number:
-             # 如果允许修改工单号，需要检查新工单号是否唯一
-            existing_wo = await self.work_order_repo.get_by_order_number(update_data["order_number"])
-            if existing_wo and existing_wo.id != wo_id:
-                raise ValueError(f"Work order with number '{update_data['order_number']}' already exists.")
-            work_order.order_number = update_data["order_number"]
 
-        # 使用实体的方法来更新，以封装领域逻辑
-        work_order.update_details(
-            product_name=update_data.get("product_name"),
-            quantity=update_data.get("quantity"),
-            due_date=update_data.get("due_date"),
-            notes=update_data.get("notes")
-        )
+        # The repository update method now takes wo_id and WorkOrderUpdate
+        return await self.work_order_repo.update(wo_id, wo_update_data)
 
-        if "status" in update_data:
-            work_order.update_status(OrderStatus(update_data["status"]))
-
-        work_order.updated_at = datetime.utcnow()
-        return await self.work_order_repo.update(work_order)
 
     async def delete_work_order(self, wo_id: uuid.UUID) -> bool:
-        # 可在此处添加业务规则，例如不允许删除正在进行的工单
-        wo = await self.work_order_repo.get_by_id(wo_id)
-        if wo and wo.status == OrderStatus.IN_PROGRESS:
-            raise ValueError("Cannot delete a work order that is in progress.")
+        """Deletes a work order. Returns True if successful."""
+        # Add business logic if needed, e.g., check status before deletion
+        work_order_to_delete = await self.work_order_repo.get_by_id(wo_id)
+        if work_order_to_delete and work_order_to_delete.status == OrderStatus.IN_PROGRESS:
+            raise ValueError("Cannot delete a work order that is currently in progress.")
+        
         return await self.work_order_repo.delete(wo_id)
 
     async def count_work_orders(self) -> int:
-        # 实际场景中，仓储接口可能需要一个 count() 方法
-        items = await self.work_order_repo.list_all(limit=0) # 临时方案获取数量
-        return len(await self.work_order_repo.list_all(limit=1000000)) # 不推荐，应有专用count方法
+        """Counts all work orders."""
+        return await self.work_order_repo.count_all()
+

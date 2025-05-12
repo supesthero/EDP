@@ -1,32 +1,37 @@
 # api/endpoints/work_orders_router.py
 import uuid
-from typing import List
+from sqlmodel import SQLModel
+from typing import List, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 
-from api.schemas import work_order_schemas
+# Import SQLModel schemas directly
+from infrastructure.sqlmodels.work_order import (
+    WorkOrder, # The table model, can be used for responses if it matches WorkOrderReadFull
+    WorkOrderCreate,
+    WorkOrderRead,
+    WorkOrderUpdate,
+    WorkOrderReadFull
+)
 from application.services.work_order_app_service import WorkOrderApplicationService
-from core.dependencies import get_work_order_application_service # 修改了导入
+from core.dependencies import get_work_order_application_service
 
 router = APIRouter(
     prefix="/work-orders",
-    tags=["Work Orders - 工单管理"],
+    tags=["Work Orders - 工单管理 (SQLModel)"], # Updated tag
 )
-
-# FastAPI 会自动处理从 service 返回的领域实体 WorkOrder 到 WorkOrderResponse 的转换
-# (因为 WorkOrderResponse.Config.from_attributes = True)
 
 @router.post(
     "/",
-    response_model=work_order_schemas.WorkOrderResponse,
+    response_model=WorkOrderRead, # Or WorkOrderReadFull if you want all fields from table model
     status_code=status.HTTP_201_CREATED,
-    summary="创建新工单"
+    summary="创建新工单 (SQLModel)"
 )
 async def create_work_order(
-    wo_create: work_order_schemas.WorkOrderCreateRequest,
+    wo_create: WorkOrderCreate, # Use SQLModel schema for request body
     service: WorkOrderApplicationService = Depends(get_work_order_application_service)
-):
+) -> Any: # Return type can be WorkOrderRead or WorkOrder (SQLModel table model)
     """
-    创建一张新的工单。
+    创建一张新的工单。SQLModel 版本。
     - **order_number**: 工单号 (必填, 唯一)
     - **product_name**: 产品名称 (必填)
     - **quantity**: 计划数量 (必填, >0)
@@ -35,50 +40,57 @@ async def create_work_order(
     - **notes**: 备注 (可选)
     """
     try:
-        created_wo = await service.create_work_order(wo_create)
+        # The service method will need to be adapted to accept WorkOrderCreate
+        # and return a WorkOrder (table model) or compatible type.
+        created_wo = await service.create_work_order_sqlmodel(wo_create_data=wo_create)
         return created_wo
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         # Log the exception e
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+        print(f"Error in create_work_order: {e}") # Basic logging
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error creating work order")
 
 
 @router.get(
     "/{wo_id}",
-    response_model=work_order_schemas.WorkOrderResponse,
-    summary="根据ID获取工单详情"
+    response_model=WorkOrderReadFull, # Use WorkOrderRead or WorkOrderReadFull
+    summary="根据ID获取工单详情 (SQLModel)"
 )
 async def get_work_order_by_id(
     wo_id: uuid.UUID,
     service: WorkOrderApplicationService = Depends(get_work_order_application_service)
-):
-    """
-    通过工单的唯一ID获取其详细信息。
-    """
-    work_order = await service.get_work_order_by_id(wo_id)
+) -> Any:
+    work_order = await service.get_work_order_by_id(wo_id) # Service returns SQLModel WorkOrder
     if not work_order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work Order not found")
     return work_order
 
 
+class WorkOrderListResponse(SQLModel): # Define a Pydantic/SQLModel for list response
+    items: List[WorkOrderRead] # List of read models
+    total: int
+    skip: int
+    limit: int
+
 @router.get(
     "/",
-    response_model=work_order_schemas.WorkOrderListResponse,
-    summary="获取工单列表 (分页)"
+    response_model=WorkOrderListResponse, # Use the new list response model
+    summary="获取工单列表 (分页, SQLModel)"
 )
 async def list_work_orders(
     skip: int = Query(0, ge=0, description="跳过的记录数"),
     limit: int = Query(10, ge=1, le=100, description="每页的记录数"),
     service: WorkOrderApplicationService = Depends(get_work_order_application_service)
-):
-    """
-    获取工单列表，支持分页。
-    """
-    items = await service.get_all_work_orders(skip=skip, limit=limit)
-    total_count = await service.count_work_orders() # 获取总数
-    return work_order_schemas.WorkOrderListResponse(
-        items=items,
+) -> WorkOrderListResponse:
+    items = await service.get_all_work_orders(skip=skip, limit=limit) # Service returns List[WorkOrder]
+    total_count = await service.count_work_orders()
+    # Convert items to WorkOrderRead if necessary, though direct SQLModel WorkOrder might be fine
+    # if WorkOrderReadFull is the target and WorkOrder is compatible.
+    # For explicit schema, map here:
+    # read_items = [WorkOrderRead.model_validate(item) for item in items]
+    return WorkOrderListResponse(
+        items=items, # Assuming service returns List[WorkOrder] which is compatible with List[WorkOrderRead] structure
         total=total_count,
         skip=skip,
         limit=limit
@@ -87,46 +99,40 @@ async def list_work_orders(
 
 @router.put(
     "/{wo_id}",
-    response_model=work_order_schemas.WorkOrderResponse,
-    summary="更新工单信息"
+    response_model=WorkOrderRead, # Or WorkOrderReadFull
+    summary="更新工单信息 (SQLModel)"
 )
 async def update_work_order(
     wo_id: uuid.UUID,
-    wo_update: work_order_schemas.WorkOrderUpdateRequest,
+    wo_update: WorkOrderUpdate, # Use SQLModel schema for request body
     service: WorkOrderApplicationService = Depends(get_work_order_application_service)
-):
-    """
-    更新指定ID的工单信息。
-    只有提供的字段才会被更新。
-    """
+) -> Any:
     try:
-        updated_wo = await service.update_work_order(wo_id, wo_update)
+        # Service method needs to accept WorkOrderUpdate
+        updated_wo = await service.update_work_order_sqlmodel(wo_id=wo_id, wo_update_data=wo_update)
         if not updated_wo:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work Order not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work Order not found for update")
         return updated_wo
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        # Log the exception e
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+        print(f"Error in update_work_order: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error updating work order")
 
 
 @router.delete(
     "/{wo_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="删除工单"
+    summary="删除工单 (SQLModel)"
 )
 async def delete_work_order(
     wo_id: uuid.UUID,
     service: WorkOrderApplicationService = Depends(get_work_order_application_service)
 ):
-    """
-    根据ID删除工单。
-    """
     try:
-        deleted = await service.delete_work_order(wo_id)
+        deleted = await service.delete_work_order(wo_id) # Service method is fine
         if not deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work Order not found or could not be deleted")
-    except ValueError as e: # 例如，试图删除进行中的工单
+    except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    return None # HTTP 204 No Content
+    return None
