@@ -1,9 +1,20 @@
-[project]
-name = "backend"
+[tool.poetry]
+name = "mes-backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "MES Backend using FastAPI and DDD"
+authors = ["Your Name <you@example.com>"]
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
-    "fastapi[all]>=0.115.12",
-]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.111.0"
+uvicorn = {extras = ["standard"], version = "^0.29.0"}
+pydantic = "^2.7.1"
+# 对于更复杂的项目，可能会添加:
+sqlalchemy = "^2.0.30" # 如果使用SQL数据库
+alembic = "^1.13.1"    # 数据库迁移
+psycopg2-binary = "^2.9.9" # PostgreSQL驱动 (示例)
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
